@@ -20,18 +20,18 @@ import (
 	"context"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
-
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/iam/iamiface"
+	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/aws/aws-sdk-go/service/sts/stsiface"
 	"github.com/openshift/cloud-credential-operator/version"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -49,6 +49,7 @@ type Client interface {
 	DeleteAccessKey(*iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error)
 	DeleteUser(*iam.DeleteUserInput) (*iam.DeleteUserOutput, error)
 	DeleteUserPolicy(*iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error)
+	GetCallerIdentity(*sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
 	GetUser(*iam.GetUserInput) (*iam.GetUserOutput, error)
 	ListAccessKeys(*iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error)
 	ListUserPolicies(*iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error)
@@ -60,6 +61,7 @@ type Client interface {
 
 type awsClient struct {
 	iamClient iamiface.IAMAPI
+	stsClient stsiface.STSAPI
 }
 
 func (c *awsClient) CreateAccessKey(input *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
@@ -81,6 +83,11 @@ func (c *awsClient) DeleteUser(input *iam.DeleteUserInput) (*iam.DeleteUserOutpu
 func (c *awsClient) DeleteUserPolicy(input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
 	return c.iamClient.DeleteUserPolicy(input)
 }
+
+func (c *awsClient) GetCallerIdentity(input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+	return c.stsClient.GetCallerIdentity(input)
+}
+
 func (c *awsClient) GetUser(input *iam.GetUserInput) (*iam.GetUserOutput, error) {
 	return c.iamClient.GetUser(input)
 }
@@ -111,10 +118,18 @@ func (c *awsClient) TagUser(input *iam.TagUserInput) (*iam.TagUserOutput, error)
 
 // NewClient creates our client wrapper object for the actual AWS clients we use.
 func NewClient(accessKeyID, secretAccessKey []byte, infraName string) (Client, error) {
+	return NewClientWithCreds(&credentials.Value{
+		AccessKeyID:     string(accessKeyID),
+		SecretAccessKey: string(secretAccessKey),
+	}, infraName)
+}
+
+// NewClientWithCreds creates our client wrapper object for the actual AWS clients we use.
+func NewClientWithCreds(creds *credentials.Value, infraName string) (Client, error) {
 	awsConfig := &awssdk.Config{}
 
 	awsConfig.Credentials = credentials.NewStaticCredentials(
-		string(accessKeyID), string(secretAccessKey), "")
+		creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken)
 
 	s, err := session.NewSession(awsConfig)
 	if err != nil {
@@ -127,10 +142,11 @@ func NewClient(accessKeyID, secretAccessKey []byte, infraName string) (Client, e
 
 	return &awsClient{
 		iamClient: iam.New(s),
+		stsClient: sts.New(s),
 	}, nil
 }
 
-func LoadCredsFromSecret(kubeClient client.Client, namespace, secretName string) ([]byte, []byte, error) {
+func LoadCredsFromSecret(kubeClient client.Client, namespace, secretName string) (*credentials.Value, error) {
 
 	secret := &corev1.Secret{}
 	err := kubeClient.Get(context.TODO(),
@@ -140,17 +156,21 @@ func LoadCredsFromSecret(kubeClient client.Client, namespace, secretName string)
 		},
 		secret)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	accessKeyID, ok := secret.Data[awsCredsSecretIDKey]
 	if !ok {
-		return nil, nil, fmt.Errorf("AWS credentials secret %v did not contain key %v",
+		return nil, fmt.Errorf("AWS credentials secret %v did not contain key %v",
 			secretName, awsCredsSecretIDKey)
 	}
 	secretAccessKey, ok := secret.Data[awsCredsSecretAccessKey]
 	if !ok {
-		return nil, nil, fmt.Errorf("AWS credentials secret %v did not contain key %v",
+		return nil, fmt.Errorf("AWS credentials secret %v did not contain key %v",
 			secretName, awsCredsSecretAccessKey)
 	}
-	return accessKeyID, secretAccessKey, nil
+	creds := &credentials.Value{
+		AccessKeyID:     string(accessKeyID),
+		SecretAccessKey: string(secretAccessKey),
+	}
+	return creds, nil
 }

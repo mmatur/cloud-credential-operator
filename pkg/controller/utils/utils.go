@@ -190,7 +190,11 @@ func CheckPermissionsUsingQueryClient(queryClient, targetClient ccaws.Client, st
 		if *result.EvalDecision != "allowed" {
 			// Don't return on the first failure, so we can log the full list
 			// of failed/denied actions
-			logger.WithField("action", *result.EvalActionName).Warning("Action not allowed with tested creds")
+			logger.WithField("action", *result.EvalActionName).
+				WithField("targetUser.Arn", *targetUser.Arn).
+				WithField("targetUser.UserId", *targetUser.UserId).
+				WithField("targetUser.UserName", *targetUser.UserName).
+				Warning("Action not allowed with tested creds")
 			allClear = false
 		}
 	}
